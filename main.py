@@ -2,7 +2,6 @@ import sqlite3
 import re
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
-import pandas as pd
 from datetime import datetime, timedelta
 from tkcalendar import DateEntry
 from tkinter import filedialog
@@ -11,6 +10,16 @@ import glob
 import os
 import sys
 from pathlib import Path
+import zipfile
+import xml.etree.ElementTree as ET
+
+# Опциональный импорт pandas (используется только для экспорта)
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
+    pd = None
 
 def get_month_year_label(db_filename):
     import re
@@ -475,46 +484,215 @@ def open_main_window(user):
     surname_entry = ttk.Entry(frame_add, width=40)
     surname_entry.grid(row=1, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=5)
 
-    # Определение категорий для каждого пункта
-    problem_categories = {
-        "водоотведение": [
-            "забой канализационного колодца",
-            "течь канализации по дороге",
-        ],
-        "водоснабжение": [
-            "течь воды",
-            "течь в / колонки",
-            "течь из-под земли",
-            "течь пожарного гидранта",
-            "течь из -под асфальта",
-            "течь трассы холодной воды",
-            "откачка воды из колодца",
-            "дефект водоразборной колонки",
-            "ржавая холодная вода в жилом фонде",
-            "Не работает в / колонка",
-            "слабое давление х/в",
-            "восстановить в/колонку",
-            "течь в/к",
-            "нет х/в"
-        ],
-        "общие": [
-            "перекладка",
-            "водопровод",
-            "частные врезки",
-            "открыт колодец (отсутствие/несоответствие крышки)",
-            "восстановление асфальтобетонного покрытия",
-            "разрушена плита колодца",
-            "привести к/к в нормативное состояние",
-            "привести в / к в нормативное состояние",
-            "обвал в/к",
-            "обвал к/к",
-        ]
+    # Функция для извлечения данных из Word документа
+    def load_problem_categories_from_docx():
+        """Загружает problem_categories и problem_to_blank_category из Word документа"""
+        doc_path = os.path.join(_get_app_dir(), "Таблица содержание 28.11.2025 ( исправление).docx")
+        
+        # Значения по умолчанию
+        default_categories = {
+            "водоотведение": [
+                "забой канализационного колодца",
+                "течь канализации по дороге",
+            ],
+            "водоснабжение": [
+                "течь воды",
+                "течь в / колонки",
+                "течь из-под земли",
+                "течь пожарного гидранта",
+                "течь из -под асфальта",
+                "течь трассы холодной воды",
+                "откачка воды из колодца",
+                "дефект водоразборной колонки",
+                "ржавая холодная вода в жилом фонде",
+                "Не работает в / колонка",
+                "слабое давление х/в",
+                "восстановить в/колонку",
+                "течь в/к",
+                "нет х/в"
+            ],
+            "общие": [
+                "перекладка",
+                "водопровод",
+                "частные врезки",
+                "открыт колодец (отсутствие/несоответствие крышки)",
+                "восстановление асфальтобетонного покрытия",
+                "разрушена плита колодца",
+                "привести к/к в нормативное состояние",
+                "привести в / к в нормативное состояние",
+                "обвал в/к",
+                "обвал к/к",
+            ]
+        }
+        
+        default_mapping = {
+            "течь канализации по дороге": "канализация",
+        }
+        
+        # Пытаемся загрузить из Word документа
+        if os.path.exists(doc_path):
+            try:
+                content_to_category = {}
+                all_contents = []
+                
+                with zipfile.ZipFile(doc_path, 'r') as docx:
+                    xml_content = docx.read('word/document.xml')
+                    root = ET.fromstring(xml_content)
+                    
+                    ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+                    rows = root.findall('.//w:tr', ns)
+                    
+                    for row in rows:
+                        cells = row.findall('.//w:tc', ns)
+                        cell_texts = []
+                        for cell in cells:
+                            texts = [t.text for t in cell.findall('.//w:t', ns) if t.text]
+                            cell_texts.append(' '.join(texts).strip())
+                        
+                        if not any(cell_texts):
+                            continue
+                        
+                        content = ""
+                        category = ""
+                        
+                        if cell_texts[0]:
+                            match = re.search(r'^(.+?)\s*\(([^)]+)\)\s*$', cell_texts[0])
+                            if match:
+                                content = match.group(1).strip()
+                                category = match.group(2).strip()
+                            else:
+                                content = cell_texts[0]
+                                if len(cell_texts) > 1:
+                                    category = cell_texts[1].strip()
+                        
+                        for cell_text in cell_texts:
+                            matches = re.findall(r'\(([^)]+)\)', cell_text)
+                            if matches:
+                                cat = matches[-1].strip()
+                                if "срок" not in cat.lower() and "выполнен" not in cat.lower():
+                                    if not category:
+                                        category = cat
+                                    clean = re.sub(r'\s*\([^)]+\)\s*$', '', cell_text).strip()
+                                    if clean and not content:
+                                        content = clean
+                        
+                        if content:
+                            all_contents.append(content)
+                            if category:
+                                content_to_category[content.lower()] = category.lower()
+                
+                # Обновляем маппинг
+                if content_to_category:
+                    # Преобразуем категории в формат для бланка сведений
+                    category_map_to_blank = {
+                        "канализация": "КАНАЛИЗАЦИЯ",
+                        "водопровод": "ВОДОПРОВОД",
+                        "водоотведение": "КАНАЛИЗАЦИЯ",
+                        "водоснабжение": "ВОДОПРОВОД",
+                        "перекладка": "ПЕРЕКЛАДКА",
+                        "в/колонки": "В/КОЛОНКИ",
+                        "колонки": "В/КОЛОНКИ",
+                        "пожарные гидранты": "ПОЖАРНЫЕ ГИДРАНТЫ",
+                        "гидранты": "ПОЖАРНЫЕ ГИДРАНТЫ",
+                        "частные врезки": "ЧАСТНЫЕ ВРЕЗКИ",
+                        "врезки": "ЧАСТНЫЕ ВРЕЗКИ",
+                    }
+                    
+                    problem_to_blank = {}
+                    for content, cat in content_to_category.items():
+                        # Преобразуем категорию
+                        blank_cat = category_map_to_blank.get(cat, "ВОДОПРОВОД")
+                        # Пробуем найти по ключевым словам
+                        for key, value in category_map_to_blank.items():
+                            if key in cat:
+                                blank_cat = value
+                                break
+                        problem_to_blank[content] = blank_cat
+                    
+                    default_mapping.update(problem_to_blank)
+                    
+                    # Обновляем problem_categories, группируя по категориям
+                    # Создаем временные списки
+                    vodootvedenie = []
+                    vodsnabshenie = []
+                    obshie = []
+                    
+                    for content in set(all_contents):
+                        content_lower = content.lower()
+                        cat = content_to_category.get(content_lower, "")
+                        
+                        # Определяем в какую категорию поместить
+                        if "канализац" in cat or "водоотвед" in cat:
+                            vodootvedenie.append(content)
+                        elif "водопровод" in cat or "водоснабж" in cat or "вод" in cat:
+                            vodsnabshenie.append(content)
+                        else:
+                            obshie.append(content)
+                    
+                    # Обновляем только если нашли данные
+                    if vodootvedenie or vodsnabshenie or obshie:
+                        default_categories["водоотведение"] = sorted(set(vodootvedenie + default_categories["водоотведение"]), key=lambda s: s.lower())
+                        default_categories["водоснабжение"] = sorted(set(vodsnabshenie + default_categories["водоснабжение"]), key=lambda s: s.lower())
+                        default_categories["общие"] = sorted(set(obshie + default_categories["общие"]), key=lambda s: s.lower())
+                
+            except Exception as e:
+                # Если ошибка при чтении, используем значения по умолчанию
+                pass
+        
+        return default_categories, default_mapping
+    
+    # Загружаем категории из Word документа
+    problem_categories, problem_to_blank_category_raw = load_problem_categories_from_docx()
+    
+    # Преобразуем problem_to_blank_category_raw в правильный формат
+    problem_to_blank_category = {}
+    category_map_to_blank = {
+        "канализация": "КАНАЛИЗАЦИЯ",
+        "водопровод": "ВОДОПРОВОД",
+        "водоотведение": "КАНАЛИЗАЦИЯ",
+        "водоснабжение": "ВОДОПРОВОД",
+        "перекладка": "ПЕРЕКЛАДКА",
+        "в/колонки": "В/КОЛОНКИ",
+        "колонки": "В/КОЛОНКИ",
+        "пожарные гидранты": "ПОЖАРНЫЕ ГИДРАНТЫ",
+        "гидранты": "ПОЖАРНЫЕ ГИДРАНТЫ",
+        "частные врезки": "ЧАСТНЫЕ ВРЕЗКИ",
+        "врезки": "ЧАСТНЫЕ ВРЕЗКИ",
     }
     
-    # Все проблемы для удобства
+    for content, cat in problem_to_blank_category_raw.items():
+        blank_cat = category_map_to_blank.get(cat, "ВОДОПРОВОД")
+        for key, value in category_map_to_blank.items():
+            if key in cat.lower():
+                blank_cat = value
+                break
+        problem_to_blank_category[content] = blank_cat
+    
+    def clean_problem_text(problem_text: str) -> str:
+        """
+        Удаляет категорию из скобок из текста проблемы.
+        Например: "Течь канализации по дороге (канализация)" -> "Течь канализации по дороге"
+        Но сохраняет "срок выполнения" в скобках.
+        """
+        if not problem_text:
+            return ""
+        import re
+        # Сначала сохраняем "срок выполнения" если он есть
+        deadline_match = re.search(r'\([^)]*срок[^)]*выполнен[^)]*\)', problem_text, flags=re.IGNORECASE)
+        deadline_text = deadline_match.group(0) if deadline_match else ""
+        # Удаляем все скобки (включая категории)
+        cleaned = re.sub(r'\s*\([^)]*\)', '', problem_text)
+        # Восстанавливаем "срок выполнения" если был
+        if deadline_text:
+            cleaned = cleaned.strip() + " " + deadline_text
+        return cleaned.strip()
+    
+    # Все проблемы для удобства (очищенные от категорий в скобках)
     all_problems = []
     for cat_problems in problem_categories.values():
-        all_problems.extend(cat_problems)
+        # Очищаем каждую проблему от категорий в скобках для отображения
+        cleaned_problems = [clean_problem_text(p) for p in cat_problems]
+        all_problems.extend(cleaned_problems)
 
     ttk.Label(frame_add, text="Категория:").grid(row=2, column=0, sticky=tk.W, pady=5)
     category_var = tk.StringVar(value="")
@@ -595,9 +773,12 @@ def open_main_window(user):
                 messagebox.showwarning("Ошибка", "Срок выполнения должен быть числом")
                 return
 
+        # Очищаем текст проблемы от категорий в скобках (если они есть)
+        problem_text_cleaned = clean_problem_text(problem_text) if problem_text else ""
+        
         # Включаем срок в текст проблемы только если он указан
-        if problem_text:
-            problem = f"{problem_text} (срок выполнения {deadline_hours} ч)" if deadline_hours else problem_text
+        if problem_text_cleaned:
+            problem = f"{problem_text_cleaned} (срок выполнения {deadline_hours} ч)" if deadline_hours else problem_text_cleaned
         else:
             problem = ""
         phone = phone_entry.get()
@@ -618,6 +799,37 @@ def open_main_window(user):
             if not brigade_number.endswith(".бр"):
                 brigade_number = f"{brigade_number}.бр"
         category = category_var.get()
+        
+        # Проверяем, нужно ли сбросить ID для нового года
+        current_year = datetime.now().year
+        try:
+            # Проверяем максимальный ID за текущий год
+            cursor.execute("""
+                SELECT MAX(id) FROM records 
+                WHERE strftime('%Y', date) = ?
+            """, (str(current_year),))
+            max_id_result = cursor.fetchone()
+            max_id_this_year = max_id_result[0] if max_id_result and max_id_result[0] else 0
+            
+            # Если это первая запись в году (max_id_this_year == 0),
+            # нужно сбросить sequence для таблицы records
+            if max_id_this_year == 0:
+                # Проверяем, есть ли записи за прошлые годы
+                cursor.execute("SELECT MAX(id) FROM records")
+                max_id_all = cursor.fetchone()[0] if cursor.fetchone() else 0
+                
+                # Если есть записи за прошлые годы, сбрасываем sequence
+                if max_id_all > 0:
+                    try:
+                        # Удаляем запись из sqlite_sequence для таблицы records
+                        cursor.execute("DELETE FROM sqlite_sequence WHERE name='records'")
+                        conn.commit()
+                    except Exception:
+                        # Если таблица sqlite_sequence не существует или произошла ошибка, игнорируем
+                        pass
+        except Exception:
+            pass
+        
         cursor.execute("INSERT INTO records (name, surname, problem, phone, address, date, assignment_date, status, user_id, created_at, improvement, brigade_number, category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                        (name, surname, problem, phone, address, date, assignment_date, status_value, user[0], created_at, improvement, brigade_number, category))
         new_id = cursor.lastrowid
@@ -817,8 +1029,15 @@ def open_main_window(user):
         db_files.sort(key=lambda x: x.name, reverse=True)
         return db_files
 
-    def get_filtered_rows(keyword=None, start_date: str | None = None, end_date: str | None = None):
+    def get_filtered_rows(keyword=None, start_date: str | None = None, end_date: str | None = None, db_files=None):
         """Возвращает строки по текущим фильтрам и опциональному диапазону дат (из всех баз данных)."""
+        # Используем selected_db_files если db_files не указан
+        if db_files is None:
+            try:
+                db_files = selected_db_files
+            except:
+                pass
+        
         def execute_query(cursor_to_use):
             query = """SELECT r.id, r.name, r.surname, r.category, r.problem, r.brigade_number, r.phone, r.address,
                                COALESCE(r.created_at, r.date) AS created_at,
@@ -857,11 +1076,15 @@ def open_main_window(user):
             cursor_to_use.execute(query, params)
             return cursor_to_use.fetchall()
         
-        # Получаем все базы данных
-        db_files = _get_all_databases()
-        if not db_files:
-            # Если баз нет, используем текущую
-            return execute_query(cursor)
+        # Используем selected_db_files если указан, иначе все базы
+        if db_files is None:
+            try:
+                db_files = selected_db_files
+            except:
+                pass
+            if db_files is None:
+                # Если selected_db_files не установлен, используем только текущую базу
+                return execute_query(cursor)
         
         # Используем функцию для запроса к нескольким базам
         return _execute_query_multiple_dbs(execute_query, db_files)
@@ -992,7 +1215,43 @@ def open_main_window(user):
             return
         for item in records_tree.get_children():
             records_tree.delete(item)
+        
+        # Группируем записи по месяцам для разграничения (только если выбрано несколько баз)
+        current_month_label = None
+        months_ru = {
+            "January": "Январь", "February": "Февраль", "March": "Март",
+            "April": "Апрель", "May": "Май", "June": "Июнь",
+            "July": "Июль", "August": "Август", "September": "Сентябрь",
+            "October": "Октябрь", "November": "Ноябрь", "December": "Декабрь"
+        }
+        
         for i, row in enumerate(rows):
+            # Определяем месяц записи (только если выбрано несколько баз)
+            month_label = None
+            if selected_db_files and len(selected_db_files) > 1:
+                try:
+                    dt = datetime.strptime(row[8], "%Y-%m-%d %H:%M:%S")
+                    month_label = dt.strftime("%B %Y")
+                except Exception:
+                    try:
+                        d = datetime.strptime(row[8], "%Y-%m-%d")
+                        month_label = d.strftime("%B %Y")
+                    except Exception:
+                        pass
+                
+                # Преобразуем месяц на русский
+                if month_label:
+                    for en, ru in months_ru.items():
+                        month_label = month_label.replace(en, ru)
+                
+                # Добавляем заголовок месяца если изменился
+                if month_label and month_label != current_month_label:
+                    current_month_label = month_label
+                    # Вставляем строку-разделитель с названием месяца
+                    records_tree.insert('', 'end', values=(
+                        "", "", f"═══════ {month_label.upper()} ═══════", "", "", "", "", "", "", "", ""
+                    ), tags=('header',))
+            
             # row[8] может содержать дату или дату-время (created_at)
             date_formatted = ""; time_formatted = ""
             try:
@@ -1047,47 +1306,172 @@ def open_main_window(user):
 
 
     # ---- Список записей отдельным окном ----
+    # Переменная для хранения выбранных баз (None = текущая база, список = несколько баз)
+    selected_db_files = None
+    
     def open_records_window():
-        nonlocal records_window, records_tree
-
+        nonlocal records_window, records_tree, selected_db_files
+        
         def choose_db_dialog(btn_choose_db):
+            nonlocal selected_db_files
             win = tk.Toplevel(records_window)
             win.title("Выбор базы данных")
             setup_scaling()
-            fit_and_center_window(win, min_width=320, min_height=180)
-            ttk.Label(win, text="Выберите год:").pack(pady=(10, 2))
+            fit_and_center_window(win, min_width=400, min_height=350)
+            
+            # Радиокнопки для выбора режима
+            mode_var = tk.StringVar(value="current")
+            ttk.Label(win, text="Режим отображения:", font=("", 10, "bold")).pack(pady=(10, 5))
+            
+            ttk.Radiobutton(win, text="Текущий месяц (по умолчанию)", variable=mode_var, value="current").pack(anchor=tk.W, padx=20)
+            ttk.Radiobutton(win, text="Вся база (все месяцы)", variable=mode_var, value="all").pack(anchor=tk.W, padx=20)
+            ttk.Radiobutton(win, text="Выбрать несколько месяцев", variable=mode_var, value="multiple").pack(anchor=tk.W, padx=20)
+            
+            # Фрейм для выбора одного месяца
+            single_month_frame = ttk.Frame(win)
+            single_month_frame.pack(pady=10, fill=tk.X, padx=20)
+            ttk.Label(single_month_frame, text="Выберите год:").grid(row=0, column=0, sticky=tk.W, pady=2)
             year_var = tk.IntVar(value=datetime.now().year)
-            year_spin = ttk.Spinbox(win, from_=2020, to=2100, textvariable=year_var, width=8)
-            year_spin.pack(pady=2)
-
-            ttk.Label(win, text="Выберите месяц:").pack(pady=(10, 2))
+            year_spin = ttk.Spinbox(single_month_frame, from_=2020, to=2100, textvariable=year_var, width=8)
+            year_spin.grid(row=0, column=1, padx=5, pady=2)
+            
+            ttk.Label(single_month_frame, text="Выберите месяц:").grid(row=1, column=0, sticky=tk.W, pady=2)
             month_var = tk.IntVar(value=datetime.now().month)
-            month_spin = ttk.Spinbox(win, from_=1, to=12, textvariable=month_var, width=8)
-            month_spin.pack(pady=2)
-
+            month_spin = ttk.Spinbox(single_month_frame, from_=1, to=12, textvariable=month_var, width=8)
+            month_spin.grid(row=1, column=1, padx=5, pady=2)
+            
+            def update_ui():
+                if mode_var.get() == "current":
+                    single_month_frame.pack_forget()
+                else:
+                    single_month_frame.pack(pady=10, fill=tk.X, padx=20)
+            
+            mode_var.trace('w', lambda *args: update_ui())
+            update_ui()
+            
             def do_select():
-                year = year_var.get()
-                month = month_var.get()
-                db_name = f"app_{year}_{month:02d}.db"
+                nonlocal selected_db_files
+                mode = mode_var.get()
                 base_dir = _load_db_base_dir()
-                db_path = str(Path(base_dir) / db_name)
-                if not os.path.exists(db_path):
-                    messagebox.showwarning("База не найдена", f"База за {month:02d}.{year} не существует в выбранном каталоге!")
-                    win.lift()
-                    records_window.lift()
-                    return
-                if db_path != current_db_file:
+                
+                if mode == "current":
+                    # Текущий месяц - возвращаемся к одной базе
+                    year = datetime.now().year
+                    month = datetime.now().month
+                    db_name = f"app_{year}_{month:02d}.db"
+                    db_path = str(Path(base_dir) / db_name)
+                    if not os.path.exists(db_path):
+                        messagebox.showwarning("База не найдена", f"База за {month:02d}.{year} не существует!")
+                        return
+                    selected_db_files = None
                     switch_db(db_path)
-                    refresh_records_default()
-                    try:
-                        refresh_recent()
-                    except Exception:
-                        pass
                     btn_choose_db.config(text=f"Сменить базу ({get_month_year_label(os.path.basename(current_db_file))})")
+                    
+                elif mode == "all":
+                    # Вся база - выбираем все базы
+                    all_dbs = []
+                    for db_file in Path(base_dir).glob("app_*.db"):
+                        if db_file.name != "app.db":
+                            all_dbs.append(db_file)
+                    all_dbs.sort(key=lambda x: x.name)
+                    if not all_dbs:
+                        messagebox.showwarning("База не найдена", "Базы данных не найдены!")
+                        return
+                    selected_db_files = all_dbs
+                    btn_choose_db.config(text=f"Сменить базу (ВСЯ БАЗА - {len(all_dbs)} месяцев)")
+                    
+                elif mode == "multiple":
+                    # Несколько месяцев - используем существующий диалог
+                    db_files = []
+                    for db_file in Path(base_dir).glob("app_*.db"):
+                        if db_file.name != "app.db":
+                            db_files.append(db_file)
+                    db_files.sort(key=lambda x: x.name, reverse=True)
+                    
+                    if not db_files:
+                        messagebox.showinfo("Информация", "Базы данных не найдены")
+                        return
+                    
+                    # Создаем диалог выбора
+                    select_win = tk.Toplevel(win)
+                    select_win.title("Выбор месяцев")
+                    fit_and_center_window(select_win, min_width=350, min_height=400)
+                    
+                    frm = ttk.Frame(select_win, padding="20")
+                    frm.pack(fill=tk.BOTH, expand=True)
+                    
+                    ttk.Label(frm, text="Выберите месяцы:", font=("", 10, "bold")).pack(pady=(0, 10))
+                    
+                    list_frame = ttk.Frame(frm)
+                    list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+                    
+                    scrollbar = ttk.Scrollbar(list_frame)
+                    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+                    
+                    listbox = tk.Listbox(list_frame, selectmode=tk.MULTIPLE, yscrollcommand=scrollbar.set, height=12)
+                    listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+                    scrollbar.config(command=listbox.yview)
+                    
+                    selected_vars = {}
+                    for db_file in db_files:
+                        label = get_month_year_label(db_file.name)
+                        idx = listbox.size()
+                        listbox.insert(tk.END, label)
+                        selected_vars[idx] = db_file
+                    
+                    # Выбираем текущий месяц по умолчанию
+                    try:
+                        current_db_name = os.path.basename(current_db_file)
+                        for idx, db_file in enumerate(db_files):
+                            if db_file.name == current_db_name:
+                                listbox.selection_set(idx)
+                                listbox.see(idx)
+                                break
+                    except:
+                        pass
+                    
+                    selected_dbs_list = []
+                    
+                    def confirm_multiple():
+                        nonlocal selected_db_files, selected_dbs_list
+                        selected_indices = listbox.curselection()
+                        if not selected_indices:
+                            messagebox.showwarning("Предупреждение", "Выберите хотя бы один месяц")
+                            return
+                        selected_dbs_list = [selected_vars[idx] for idx in selected_indices]
+                        selected_db_files = selected_dbs_list
+                        select_win.destroy()
+                        win.destroy()
+                        btn_choose_db.config(text=f"Сменить базу ({len(selected_dbs_list)} месяцев)")
+                        refresh_records_default()
+                        try:
+                            refresh_recent()
+                        except Exception:
+                            pass
+                    
+                    def select_all_multiple():
+                        listbox.selection_set(0, tk.END)
+                    
+                    btn_frame = ttk.Frame(frm)
+                    btn_frame.pack(pady=5)
+                    ttk.Button(btn_frame, text="Выбрать все", command=select_all_multiple).pack(side=tk.LEFT, padx=5)
+                    ttk.Button(btn_frame, text="ОК", command=confirm_multiple).pack(side=tk.LEFT, padx=5)
+                    ttk.Button(btn_frame, text="Отмена", command=select_win.destroy).pack(side=tk.LEFT, padx=5)
+                    
+                    select_win.wait_window()
+                    return
+                
+                refresh_records_default()
+                try:
+                    refresh_recent()
+                except Exception:
+                    pass
                 win.destroy()
 
-            ttk.Button(win, text="Выбрать", command=do_select).pack(pady=10)
-            ttk.Button(win, text="Отмена", command=win.destroy).pack()
+            btn_frame = ttk.Frame(win)
+            btn_frame.pack(pady=10)
+            ttk.Button(btn_frame, text="Выбрать", command=do_select).pack(side=tk.LEFT, padx=5)
+            ttk.Button(btn_frame, text="Отмена", command=win.destroy).pack(side=tk.LEFT, padx=5)
 
 
     # ...дальше ваш код (filters_panel, таблица и т.д.)...
@@ -1434,12 +1818,17 @@ def open_main_window(user):
 
         def _export_current_list():
             """Экспортирует текущий список по локальным фильтрам в отдельный Excel."""
+            if not PANDAS_AVAILABLE:
+                messagebox.showerror("Ошибка", "Модуль pandas не установлен.\n\n"
+                                          "Установите зависимости:\n"
+                                          "pip install pandas openpyxl\n\n"
+                                          "Или запустите install_dependencies.bat")
+                return
             try:
-                import pandas as pd
                 from openpyxl.utils import get_column_letter
                 from openpyxl.styles import Alignment
             except ImportError as e:
-                messagebox.showerror("Ошибка", f"Не установлены необходимые модули: {e}\n\npip install pandas openpyxl")
+                messagebox.showerror("Ошибка", f"Не установлен модуль openpyxl: {e}\n\npip install openpyxl")
                 return
 
             # Выбор баз данных
@@ -1587,12 +1976,17 @@ def open_main_window(user):
 
         def _export_full_period_local():
             """Экспорт без учёта локальных фильтров за период из этого окна (local_start/local_end)."""
+            if not PANDAS_AVAILABLE:
+                messagebox.showerror("Ошибка", "Модуль pandas не установлен.\n\n"
+                                          "Установите зависимости:\n"
+                                          "pip install pandas openpyxl\n\n"
+                                          "Или запустите install_dependencies.bat")
+                return
             try:
-                import pandas as pd
                 from openpyxl.utils import get_column_letter
             except ImportError as e:
-                messagebox.showerror("Ошибка", f"Не установлены необходимые модули: {e}\n\n"
-                                          "pip install pandas openpyxl")
+                messagebox.showerror("Ошибка", f"Не установлен модуль openpyxl: {e}\n\n"
+                                          "pip install openpyxl")
                 return
 
             # Выбор баз данных
@@ -1661,16 +2055,16 @@ def open_main_window(user):
                 formatted_rows.append({
                     "№ п/п": idx,
                     "Номер заявки": f"№ {rec_id}",
-                    "Дата": date_fmt,
-                    "Время": time_fmt,
+                    "Дата": date_fmt or "",
+                    "Время": time_fmt or "",
                     "Содержание заявки": problem_text.upper() if problem_text else "",
                     "Категория": category or "",
                     "Номер бригады": brigade_number or "",
-                    "Срок выполнения": deadline_text,
+                    "Срок выполнения": deadline_text or "",
                     "Телефон": phone or "",
                     "Адрес": address or "",
                     "Примечание": improvement or "",
-                    "Заявитель": applicant_line,
+                    "Заявитель": applicant_line or "",
                     "Оператор": operator_username or "",
                     "Состояние выполнения": status_full or "",
                 })
@@ -2034,9 +2428,9 @@ def open_main_window(user):
                 ws.cell(row=row, column=2, value=sewer_total); row += 1
                 ws.cell(row=row, column=1, value="течь канализации"); ws.cell(row=row, column=2, value=counts["течь канализации"]); row += 1
                 ws.cell(row=row, column=1, value="засор канализации"); ws.cell(row=row, column=2, value=counts["засор канализации"]); row += 1
-                ws.cell(row=row, column=1, value="с/м. засор канализации"); ws.cell(row=row, column=2, value=0); row += 1
+                ws.cell(row=row, column=1, value="с/м. засор канализации"); ws.cell(row=row, column=2, value=""); row += 1
                 ws.cell(row=row, column=1, value="ав. на к/коллекторе"); ws.cell(row=row, column=2, value=counts["ав. на к/коллекторе"]); row += 1
-                ws.cell(row=row, column=1, value="с/м. ав. на к/коллекторе"); ws.cell(row=row, column=2, value=0); row += 1
+                ws.cell(row=row, column=1, value="с/м. ав. на к/коллекторе"); ws.cell(row=row, column=2, value=""); row += 1
                 ws.cell(row=row, column=1, value="забит колодец"); ws.cell(row=row, column=2, value=counts["забит колодец"]); row += 1
                 ws.cell(row=row, column=1, value="открыт колодец"); ws.cell(row=row, column=2, value=counts["открыт колодец"]); row += 2
                 ws.cell(row=row, column=1, value="Период").font = bold
@@ -2084,9 +2478,8 @@ def open_main_window(user):
             def execute_query(cursor_to_use):
                 cursor_to_use.execute(
                     """
-                    SELECT r.problem, r.address, r.phone, r.name, r.surname, u.username, COALESCE(r.created_at, r.date), r.status, r.category
+                    SELECT r.problem, r.address, r.phone, r.name, r.surname, r.brigade_number, COALESCE(r.created_at, r.date), r.status, r.category
                     FROM records r
-                    LEFT JOIN common.users u ON r.user_id = u.id
                     WHERE date(r.date) = date(?)
                     ORDER BY r.id ASC
                     """,
@@ -2102,6 +2495,52 @@ def open_main_window(user):
 
             def category_for(problem_text: str) -> str:
                 t = (problem_text or "").lower()
+                
+                # Сначала проверяем, есть ли категория в скобках в самом тексте проблемы
+                # Формат: "содержание (категория)" - извлекаем категорию из скобок
+                import re
+                # Ищем категорию в скобках, но не "срок выполнения"
+                category_match = re.search(r'\(([^)]+)\)', t)
+                if category_match:
+                    category_in_parens = category_match.group(1).lower().strip()
+                    # Игнорируем "срок выполнения" и другие служебные скобки
+                    if "срок" not in category_in_parens and "выполнен" not in category_in_parens:
+                        # Маппинг категорий из скобок в названия секций бланка
+                        category_map = {
+                            "канализация": "КАНАЛИЗАЦИЯ",
+                            "водопровод": "ВОДОПРОВОД",
+                            "водоотведение": "КАНАЛИЗАЦИЯ",
+                            "водоснабжение": "ВОДОПРОВОД",
+                            "перекладка": "ПЕРЕКЛАДКА",
+                            "в/колонки": "В/КОЛОНКИ",
+                            "колонки": "В/КОЛОНКИ",
+                            "пожарные гидранты": "ПОЖАРНЫЕ ГИДРАНТЫ",
+                            "гидранты": "ПОЖАРНЫЕ ГИДРАНТЫ",
+                            "частные врезки": "ЧАСТНЫЕ ВРЕЗКИ",
+                            "врезки": "ЧАСТНЫЕ ВРЕЗКИ",
+                        }
+                        # Проверяем точное совпадение или частичное
+                        for key, value in category_map.items():
+                            if key in category_in_parens:
+                                return value
+                            # Если не нашли точное совпадение, пробуем по первым словам
+                            if "канализац" in category_in_parens:
+                                return "КАНАЛИЗАЦИЯ"
+                            if "водопровод" in category_in_parens or "водоснабж" in category_in_parens:
+                                return "ВОДОПРОВОД"
+                            if "перекладк" in category_in_parens:
+                                return "ПЕРЕКЛАДКА"
+                            if "колонк" in category_in_parens:
+                                return "В/КОЛОНКИ"
+                            if "гидрант" in category_in_parens:
+                                return "ПОЖАРНЫЕ ГИДРАНТЫ"
+                            if "врезк" in category_in_parens:
+                                return "ЧАСТНЫЕ ВРЕЗКИ"
+                
+                # Проверяем маппинг из problem_to_blank_category
+                problem_clean = clean_problem_text(problem_text).lower()
+                if problem_clean in problem_to_blank_category:
+                    return problem_to_blank_category[problem_clean]
                 
                 # ПЕРЕКЛАДКА: прокладка водопровода, врезка водопровода, разрытие, прокол канализации, прокол водопровода, замена водовода
                 # Приоритет: проверяем сначала ПЕРЕКЛАДКУ
@@ -2176,9 +2615,9 @@ def open_main_window(user):
 
             for rec in rows:
                 if len(rec) >= 9:
-                    problem, address, phone, name_, surname_, operator, dt_str, status_full, category = rec
+                    problem, address, phone, name_, surname_, brigade_number, dt_str, status_full, category = rec
                 else:
-                    problem, address, phone, name_, surname_, operator, dt_str, status_full = rec
+                    problem, address, phone, name_, surname_, brigade_number, dt_str, status_full = rec
                     category = ""
                 who = " ".join([p for p in [name_ or "", surname_ or ""] if p]).strip()
                 time_part = ""; date_part = ""
@@ -2201,8 +2640,11 @@ def open_main_window(user):
                     line_parts.append(f"тел: {phone}")
                 if who:
                     line_parts.append(who)
-                if operator:
-                    line_parts.append(f"оператор: {operator}")
+                if brigade_number:
+                    # Отображаем номер бригады без суффикса .бр если он есть
+                    brigade_display = str(brigade_number).replace(".бр", "").strip()
+                    if brigade_display:
+                        line_parts.append(f"бригада: {brigade_display}")
                 text_line = " — ".join(line_parts)
                 # Правый текст: дата/время и статус
                 right_text = ""
@@ -2330,9 +2772,8 @@ def open_main_window(user):
                 def execute_query(cursor_to_use):
                     cursor_to_use.execute(
                         """
-                        SELECT r.problem, r.address, r.phone, r.name, r.surname, u.username, COALESCE(r.created_at, r.date), r.status, r.category
+                        SELECT r.problem, r.address, r.phone, r.name, r.surname, r.brigade_number, COALESCE(r.created_at, r.date), r.status, r.category
                         FROM records r
-                        LEFT JOIN common.users u ON r.user_id = u.id
                         WHERE date(r.date) = date(?)
                         ORDER BY r.id ASC
                         """,
@@ -2348,6 +2789,55 @@ def open_main_window(user):
 
                 def category_for(problem_text: str) -> str:
                     t = (problem_text or "").lower()
+                    
+                    # Сначала проверяем, есть ли категория в скобках в самом тексте проблемы
+                    # Формат: "содержание (категория)" - извлекаем категорию из скобок
+                    import re
+                    # Ищем категорию в скобках, но не "срок выполнения"
+                    category_match = re.search(r'\(([^)]+)\)', t)
+                    if category_match:
+                        category_in_parens = category_match.group(1).lower().strip()
+                        # Игнорируем "срок выполнения" и другие служебные скобки
+                        if "срок" not in category_in_parens and "выполнен" not in category_in_parens:
+                            # Маппинг категорий из скобок в названия секций бланка
+                            category_map = {
+                                "канализация": "КАНАЛИЗАЦИЯ",
+                                "водопровод": "ВОДОПРОВОД",
+                                "водоотведение": "КАНАЛИЗАЦИЯ",
+                                "водоснабжение": "ВОДОПРОВОД",
+                                "перекладка": "ПЕРЕКЛАДКА",
+                                "в/колонки": "В/КОЛОНКИ",
+                                "колонки": "В/КОЛОНКИ",
+                                "пожарные гидранты": "ПОЖАРНЫЕ ГИДРАНТЫ",
+                                "гидранты": "ПОЖАРНЫЕ ГИДРАНТЫ",
+                                "частные врезки": "ЧАСТНЫЕ ВРЕЗКИ",
+                                "врезки": "ЧАСТНЫЕ ВРЕЗКИ",
+                            }
+                            # Проверяем точное совпадение или частичное
+                            for key, value in category_map.items():
+                                if key in category_in_parens:
+                                    return value
+                            # Если не нашли точное совпадение, пробуем по первым словам
+                            if "канализац" in category_in_parens:
+                                return "КАНАЛИЗАЦИЯ"
+                            if "водопровод" in category_in_parens or "водоснабж" in category_in_parens:
+                                return "ВОДОПРОВОД"
+                            if "перекладк" in category_in_parens:
+                                return "ПЕРЕКЛАДКА"
+                            if "колонк" in category_in_parens:
+                                return "В/КОЛОНКИ"
+                            if "гидрант" in category_in_parens:
+                                return "ПОЖАРНЫЕ ГИДРАНТЫ"
+                            if "врезк" in category_in_parens:
+                                return "ЧАСТНЫЕ ВРЕЗКИ"
+                    
+                    # Проверяем маппинг из problem_to_blank_category (используем оригинальный problem_text)
+                    try:
+                        problem_clean = clean_problem_text(problem_text).lower()
+                        if problem_clean in problem_to_blank_category:
+                            return problem_to_blank_category[problem_clean]
+                    except Exception:
+                        pass
                     
                     if "перекладк" in t or "прокладк" in t:
                         return "ПЕРЕКЛАДКА"
@@ -2401,9 +2891,9 @@ def open_main_window(user):
 
                 for rec in rows:
                     if len(rec) >= 9:
-                        problem, address, phone, name_, surname_, operator, dt_str, status_full, category = rec
+                        problem, address, phone, name_, surname_, brigade_number, dt_str, status_full, category = rec
                     else:
-                        problem, address, phone, name_, surname_, operator, dt_str, status_full = rec
+                        problem, address, phone, name_, surname_, brigade_number, dt_str, status_full = rec
                         category = ""
                     who = " ".join([p for p in [name_ or "", surname_ or ""] if p]).strip()
                     time_part = ""; date_part = ""
@@ -2426,8 +2916,11 @@ def open_main_window(user):
                         line_parts.append(f"тел: {phone}")
                     if who:
                         line_parts.append(who)
-                    if operator:
-                        line_parts.append(f"оператор: {operator}")
+                    if brigade_number:
+                        # Отображаем номер бригады без суффикса .бр если он есть
+                        brigade_display = str(brigade_number).replace(".бр", "").strip()
+                        if brigade_display:
+                            line_parts.append(f"бригада: {brigade_display}")
                     text_line = " — ".join(line_parts)
                     right_text = ""
                     try:
@@ -2564,6 +3057,7 @@ def open_main_window(user):
                 records_tree.column(col, width=380, minwidth=260, stretch=True)
         records_tree.tag_configure('odd', background='#f9fafb')
         records_tree.tag_configure('even', background='#ffffff')
+        records_tree.tag_configure('header', background='#e0e0e0', font=('', 10, 'bold'))
         scrollbar_y = ttk.Scrollbar(frame_list, orient="vertical", command=records_tree.yview)
         scrollbar_x = ttk.Scrollbar(frame_list, orient="horizontal", command=records_tree.xview)
         records_tree.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
@@ -2840,9 +3334,12 @@ def open_main_window(user):
                         messagebox.showwarning("Ошибка", "Срок выполнения должен быть числом")
                         return
 
+                # Очищаем текст проблемы от категорий в скобках (если они есть)
+                new_problem_text_cleaned = clean_problem_text(new_problem_text) if new_problem_text else ""
+                
                 # Включаем срок в текст только если он заполнен
-                if new_problem_text:
-                    new_problem = f"{new_problem_text} (срок выполнения {new_deadline_hours} ч)" if new_deadline_hours else new_problem_text
+                if new_problem_text_cleaned:
+                    new_problem = f"{new_problem_text_cleaned} (срок выполнения {new_deadline_hours} ч)" if new_deadline_hours else new_problem_text_cleaned
                 else:
                     new_problem = ""
                 new_phone = phone_entry.get()
