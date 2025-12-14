@@ -34,6 +34,210 @@ def get_month_year_label(db_filename):
     ]
     return f"{months_ru[month]} {year}"
 
+def _prepare_save_path(save_path):
+    """
+    Подготавливает путь для сохранения: создает директорию если её нет.
+    Возвращает True если путь готов, False если есть проблемы.
+    """
+    from pathlib import Path
+    
+    if not save_path:
+        return False
+    
+    try:
+        save_path_obj = Path(save_path)
+        save_dir = save_path_obj.parent
+        
+        # Создаем директорию, если её нет
+        if save_dir and not save_dir.exists():
+            save_dir.mkdir(parents=True, exist_ok=True)
+        
+        return True
+    except Exception as e:
+        # Не показываем ошибку здесь - она будет обработана при сохранении
+        return False
+
+def _handle_save_error(save_path, default_name=None, is_pandas=False):
+    """
+    Обрабатывает ошибки сохранения файла и предлагает альтернативы.
+    Возвращает новый путь для сохранения или None.
+    """
+    from pathlib import Path
+    
+    save_path_obj = Path(save_path)
+    error_msg = (
+        f"Не удалось сохранить файл:\n{save_path}\n\n"
+        f"Возможные причины:\n"
+        f"• Файл открыт в другой программе (Excel, и т.д.)\n"
+        f"• Нет прав на запись в эту директорию\n"
+        f"• Файл используется другим процессом\n\n"
+        f"Попробуйте:\n"
+        f"• Закрыть файл, если он открыт\n"
+        f"• Выбрать другое имя файла\n"
+        f"• Выбрать другую директорию"
+    )
+    
+    # Предлагаем сохранить с другим именем
+    if default_name:
+        retry = messagebox.askyesno(
+            "Ошибка доступа",
+            f"{error_msg}\n\n"
+            f"Сохранить файл с другим именем?"
+        )
+        if retry:
+            # Пробуем добавить номер к имени файла
+            base_path = save_path_obj.parent / save_path_obj.stem
+            ext = save_path_obj.suffix
+            counter = 1
+            while counter < 100:  # Ограничение на количество попыток
+                new_path = base_path.parent / f"{base_path.name}_{counter}{ext}"
+                # Проверяем, не существует ли уже файл с таким именем
+                if not new_path.exists():
+                    return str(new_path)
+                counter += 1
+            messagebox.showerror("Ошибка", "Не удалось создать альтернативное имя файла.")
+    else:
+        messagebox.showerror("Ошибка доступа", error_msg)
+    return None
+
+def safe_save_workbook(wb, save_path, default_name=None):
+    """
+    Безопасно сохраняет Workbook с обработкой ошибок доступа к файлу.
+    Возвращает True при успешном сохранении, False при ошибке.
+    """
+    import errno
+    
+    if not save_path:
+        return False
+    
+    # Подготавливаем путь (создаем директорию если нужно)
+    try:
+        save_path_obj = Path(save_path)
+        save_dir = save_path_obj.parent
+        if save_dir and str(save_dir) != '.':
+            if not save_dir.exists():
+                save_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as ex:
+        # Продолжаем, ошибка будет обработана при сохранении
+        pass
+    
+    # Пытаемся сохранить файл
+    try:
+        wb.save(save_path)
+        return True
+    except PermissionError:
+        # Файл может быть открыт в другой программе - пробуем сохранить с другим именем
+        try:
+            save_path_obj = Path(save_path)
+            base_path = save_path_obj.parent / save_path_obj.stem
+            ext = save_path_obj.suffix
+            counter = 1
+            saved = False
+            while counter < 100 and not saved:
+                new_path = base_path.parent / f"{base_path.name}_{counter}{ext}"
+                if not new_path.exists():
+                    try:
+                        wb.save(str(new_path))
+                        messagebox.showinfo(
+                            "Файл сохранён",
+                            f"Файл был открыт в другой программе.\n"
+                            f"Сохранён с другим именем:\n{new_path}"
+                        )
+                        saved = True
+                        return True
+                    except Exception:
+                        counter += 1
+                        continue
+                counter += 1
+            if not saved:
+                messagebox.showerror(
+                    "Ошибка доступа",
+                    f"Не удалось сохранить файл:\n{save_path}\n\n"
+                    f"Файл открыт в другой программе (Excel и т.д.).\n"
+                    f"Закройте файл и попробуйте снова."
+                )
+        except Exception as ex:
+            messagebox.showerror(
+                "Ошибка доступа",
+                f"Не удалось сохранить файл:\n{save_path}\n\n"
+                f"Ошибка: {ex}"
+            )
+        return False
+    except OSError as e:
+        if e.errno == errno.EACCES:
+            messagebox.showerror(
+                "Ошибка доступа",
+                f"Нет прав на запись в файл:\n{save_path}\n\n"
+                f"Проверьте права доступа или выберите другую директорию."
+            )
+        else:
+            messagebox.showerror(
+                "Ошибка сохранения",
+                f"Не удалось сохранить файл:\n{save_path}\n\n"
+                f"Ошибка: {e}"
+            )
+        return False
+    except Exception as e:
+        messagebox.showerror(
+            "Ошибка сохранения",
+            f"Произошла ошибка при сохранении файла:\n{save_path}\n\n"
+            f"Ошибка: {e}"
+        )
+        return False
+
+def safe_save_dataframe(df, save_path, default_name=None):
+    """
+    Безопасно сохраняет DataFrame в Excel с обработкой ошибок доступа к файлу.
+    Возвращает True при успешном сохранении, False при отмене пользователем.
+    """
+    import errno
+    
+    if not save_path:
+        return False
+    
+    if not _prepare_save_path(save_path):
+        return False
+    
+    # Пытаемся сохранить файл
+    try:
+        df.to_excel(save_path, index=False, engine='openpyxl')
+        return True
+    except PermissionError:
+        # Пробуем сохранить с другим именем
+        new_path = _handle_save_error(save_path, default_name, is_pandas=True)
+        if new_path:
+            try:
+                df.to_excel(new_path, index=False, engine='openpyxl')
+                messagebox.showinfo(
+                    "Файл сохранён",
+                    f"Файл сохранён с другим именем:\n{new_path}"
+                )
+                return True
+            except Exception:
+                pass
+        return False
+    except OSError as e:
+        if e.errno == errno.EACCES:
+            messagebox.showerror(
+                "Ошибка доступа",
+                f"Нет прав на запись в файл:\n{save_path}\n\n"
+                f"Проверьте права доступа или выберите другую директорию."
+            )
+        else:
+            messagebox.showerror(
+                "Ошибка сохранения",
+                f"Не удалось сохранить файл:\n{save_path}\n\n"
+                f"Ошибка: {e}"
+            )
+        return False
+    except Exception as e:
+        messagebox.showerror(
+            "Ошибка сохранения",
+            f"Произошла ошибка при сохранении файла:\n{save_path}\n\n"
+            f"Ошибка: {e}"
+        )
+        return False
+
 # ===== Создание базы =====
 # ...existing code...
 
@@ -512,8 +716,8 @@ def open_main_window(user):
                 "нет х/в"
             ],
             "общие": [
+                
                 "перекладка",
-                "водопровод",
                 "частные врезки",
                 "открыт колодец (отсутствие/несоответствие крышки)",
                 "восстановление асфальтобетонного покрытия",
@@ -566,20 +770,29 @@ def open_main_window(user):
                                     category = cell_texts[1].strip()
                         
                         for cell_text in cell_texts:
-                            matches = re.findall(r'\(([^)]+)\)', cell_text)
+                            matches = re.findall(r'\(([^)]*)\)', cell_text)
                             if matches:
                                 cat = matches[-1].strip()
-                                if "срок" not in cat.lower() and "выполнен" not in cat.lower():
+                                if cat and "срок" not in cat.lower() and "выполнен" not in cat.lower():
                                     if not category:
                                         category = cat
-                                    clean = re.sub(r'\s*\([^)]+\)\s*$', '', cell_text).strip()
+                                    clean = re.sub(r'\s*\([^)]*\)\s*$', '', cell_text).strip()
+                                    if clean and not content:
+                                        content = clean
+                            else:
+                                # Обрабатываем случай с пустыми скобками ()
+                                if re.search(r'\(\)', cell_text):
+                                    clean = re.sub(r'\s*\(\)\s*', '', cell_text).strip()
                                     if clean and not content:
                                         content = clean
                         
                         if content:
-                            all_contents.append(content)
-                            if category:
-                                content_to_category[content.lower()] = category.lower()
+                            # Удаляем пустые скобки из content перед добавлением
+                            content = re.sub(r'\s*\(\)\s*', '', content).strip()
+                            if content:
+                                all_contents.append(content)
+                                if category:
+                                    content_to_category[content.lower()] = category.lower()
                 
                 # Обновляем маппинг
                 if content_to_category:
@@ -713,7 +926,9 @@ def open_main_window(user):
             # Если категория не выбрана, показываем только общие
             filtered_options = problem_categories["общие"]
         
-        problem_entry['values'] = sorted(filtered_options, key=lambda s: s.lower())
+        # Очищаем проблемы от пустых скобок перед отображением
+        cleaned_options = [clean_problem_text(p) for p in filtered_options]
+        problem_entry['values'] = sorted(cleaned_options, key=lambda s: s.lower())
         # Сбрасываем выбранное значение, если оно не входит в новый список
         current_value = problem_var.get()
         if current_value and current_value not in filtered_options:
@@ -722,7 +937,8 @@ def open_main_window(user):
     category_var.trace('w', update_problem_options)
     
     # Инициализация списка проблем (по умолчанию - общие)
-    problem_entry = ttk.Combobox(frame_add, textvariable=problem_var, values=sorted(problem_categories["общие"], key=lambda s: s.lower()), state="readonly", width=37)
+    initial_problems = [clean_problem_text(p) for p in problem_categories["общие"]]
+    problem_entry = ttk.Combobox(frame_add, textvariable=problem_var, values=sorted(initial_problems, key=lambda s: s.lower()), state="readonly", width=37)
     problem_entry.grid(row=3, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=5)
 
     ttk.Label(frame_add, text="Номер бригады:").grid(row=4, column=0, sticky=tk.W, pady=5)
@@ -1140,7 +1356,7 @@ def open_main_window(user):
 
     def get_filtered_rows_for(keyword: str | None, problem_value: str | None, status_value: str | None,
                                operator_value: str | None, start_date: str | None = None, end_date: str | None = None):
-        """Возвращает строки по параметрам (для фильтров в окне списка) из всех баз данных."""
+        """Возвращает строки по параметрам (для фильтров в окне списка) из выбранных баз данных."""
         def execute_query(cursor_to_use):
             query = """SELECT r.id, r.name, r.surname, r.category, r.problem, r.brigade_number, r.phone, r.address,
                                COALESCE(r.created_at, r.date) AS created_at,
@@ -1177,10 +1393,14 @@ def open_main_window(user):
             cursor_to_use.execute(query, params)
             return cursor_to_use.fetchall()
         
-        # Получаем все базы данных
-        db_files = _get_all_databases()
-        if not db_files:
-            # Если баз нет, используем текущую
+        # Используем selected_db_files если указан, иначе только текущую базу
+        try:
+            db_files = selected_db_files
+        except:
+            db_files = None
+        
+        if db_files is None:
+            # Если selected_db_files не установлен, используем только текущую базу
             results = execute_query(cursor)
         else:
             # Используем функцию для запроса к нескольким базам
@@ -1217,41 +1437,7 @@ def open_main_window(user):
             records_tree.delete(item)
         
         # Группируем записи по месяцам для разграничения (только если выбрано несколько баз)
-        current_month_label = None
-        months_ru = {
-            "January": "Январь", "February": "Февраль", "March": "Март",
-            "April": "Апрель", "May": "Май", "June": "Июнь",
-            "July": "Июль", "August": "Август", "September": "Сентябрь",
-            "October": "Октябрь", "November": "Ноябрь", "December": "Декабрь"
-        }
-        
         for i, row in enumerate(rows):
-            # Определяем месяц записи (только если выбрано несколько баз)
-            month_label = None
-            if selected_db_files and len(selected_db_files) > 1:
-                try:
-                    dt = datetime.strptime(row[8], "%Y-%m-%d %H:%M:%S")
-                    month_label = dt.strftime("%B %Y")
-                except Exception:
-                    try:
-                        d = datetime.strptime(row[8], "%Y-%m-%d")
-                        month_label = d.strftime("%B %Y")
-                    except Exception:
-                        pass
-                
-                # Преобразуем месяц на русский
-                if month_label:
-                    for en, ru in months_ru.items():
-                        month_label = month_label.replace(en, ru)
-                
-                # Добавляем заголовок месяца если изменился
-                if month_label and month_label != current_month_label:
-                    current_month_label = month_label
-                    # Вставляем строку-разделитель с названием месяца
-                    records_tree.insert('', 'end', values=(
-                        "", "", f"═══════ {month_label.upper()} ═══════", "", "", "", "", "", "", "", ""
-                    ), tags=('header',))
-            
             # row[8] может содержать дату или дату-время (created_at)
             date_formatted = ""; time_formatted = ""
             try:
@@ -1273,7 +1459,7 @@ def open_main_window(user):
             tag = 'even' if i % 2 == 0 else 'odd'
             records_tree.insert('', 'end', values=(
                 row[0], row[1], row[2], row[3] or "", row[4] or "", row[5] or "", row[6] or "",
-                date_formatted, time_formatted, assignment_formatted, row[10] or "", row[11] or ""
+                row[7] or "", date_formatted, time_formatted, assignment_formatted, row[10] or "", row[11] or ""
             ), tags=(tag,))
 
     def refresh_records_default():
@@ -1327,28 +1513,6 @@ def open_main_window(user):
             ttk.Radiobutton(win, text="Вся база (все месяцы)", variable=mode_var, value="all").pack(anchor=tk.W, padx=20)
             ttk.Radiobutton(win, text="Выбрать несколько месяцев", variable=mode_var, value="multiple").pack(anchor=tk.W, padx=20)
             
-            # Фрейм для выбора одного месяца
-            single_month_frame = ttk.Frame(win)
-            single_month_frame.pack(pady=10, fill=tk.X, padx=20)
-            ttk.Label(single_month_frame, text="Выберите год:").grid(row=0, column=0, sticky=tk.W, pady=2)
-            year_var = tk.IntVar(value=datetime.now().year)
-            year_spin = ttk.Spinbox(single_month_frame, from_=2020, to=2100, textvariable=year_var, width=8)
-            year_spin.grid(row=0, column=1, padx=5, pady=2)
-            
-            ttk.Label(single_month_frame, text="Выберите месяц:").grid(row=1, column=0, sticky=tk.W, pady=2)
-            month_var = tk.IntVar(value=datetime.now().month)
-            month_spin = ttk.Spinbox(single_month_frame, from_=1, to=12, textvariable=month_var, width=8)
-            month_spin.grid(row=1, column=1, padx=5, pady=2)
-            
-            def update_ui():
-                if mode_var.get() == "current":
-                    single_month_frame.pack_forget()
-                else:
-                    single_month_frame.pack(pady=10, fill=tk.X, padx=20)
-            
-            mode_var.trace('w', lambda *args: update_ui())
-            update_ui()
-            
             def do_select():
                 nonlocal selected_db_files
                 mode = mode_var.get()
@@ -1379,7 +1543,7 @@ def open_main_window(user):
                         return
                     selected_db_files = all_dbs
                     btn_choose_db.config(text=f"Сменить базу (ВСЯ БАЗА - {len(all_dbs)} месяцев)")
-                    
+                
                 elif mode == "multiple":
                     # Несколько месяцев - используем существующий диалог
                     db_files = []
@@ -1419,17 +1583,6 @@ def open_main_window(user):
                         listbox.insert(tk.END, label)
                         selected_vars[idx] = db_file
                     
-                    # Выбираем текущий месяц по умолчанию
-                    try:
-                        current_db_name = os.path.basename(current_db_file)
-                        for idx, db_file in enumerate(db_files):
-                            if db_file.name == current_db_name:
-                                listbox.selection_set(idx)
-                                listbox.see(idx)
-                                break
-                    except:
-                        pass
-                    
                     selected_dbs_list = []
                     
                     def confirm_multiple():
@@ -1449,12 +1602,8 @@ def open_main_window(user):
                         except Exception:
                             pass
                     
-                    def select_all_multiple():
-                        listbox.selection_set(0, tk.END)
-                    
                     btn_frame = ttk.Frame(frm)
                     btn_frame.pack(pady=5)
-                    ttk.Button(btn_frame, text="Выбрать все", command=select_all_multiple).pack(side=tk.LEFT, padx=5)
                     ttk.Button(btn_frame, text="ОК", command=confirm_multiple).pack(side=tk.LEFT, padx=5)
                     ttk.Button(btn_frame, text="Отмена", command=select_win.destroy).pack(side=tk.LEFT, padx=5)
                     
@@ -1495,7 +1644,6 @@ def open_main_window(user):
             "течь трассы холодной воды",
             "перекладка",
             "откачка воды из колодца",
-            "водопровод",
             "частные врезки",
             "открыт колодец (отсутствие/несоответствие крышки)",
             "дефект водоразборной колонки",
@@ -1921,56 +2069,103 @@ def open_main_window(user):
                 if not save_path:
                     messagebox.showinfo("Отмена", "Экспорт отменён пользователем")
                     return
-                with pd.ExcelWriter(save_path, engine="openpyxl") as writer:
-                    df.to_excel(writer, index=False, sheet_name="Лист1")
-                    ws = writer.sheets["Лист1"]
-                    # Автоширины
-                    for idx_c, col in enumerate(df.columns, start=1):
-                        max_len = len(str(col))
-                        for val in df[col].astype(str).values:
-                            if val is None:
-                                continue
-                            for line in str(val).split("\n"):
-                                if len(line) > max_len:
-                                    max_len = len(line)
-                        ws.column_dimensions[get_column_letter(idx_c)].width = min(80, max_len + 2)
-                    # Фиксированные ширины
-                    try:
-                        name_to_width = {
-                            "№ п/п": 8,
-                            "Номер заявки": 16,
-                            "Дата": 14,
-                            "Время": 12,
-                            "Содержание заявки": 50,
-                            "Категория": 20,
-                            "Номер бригады": 18,
-                            "Срок выполнения": 28,
-                            "Телефон": 20,
-                            "Адрес": 40,
-                            "Примечание": 30,
-                            "Заявитель": 25,
-                            "Оператор": 20,
-                            "Состояние выполнения": 28,
-                        }
-                        for name, width in name_to_width.items():
-                            if name in df.columns:
-                                col_idx = list(df.columns).index(name) + 1
-                                ws.column_dimensions[get_column_letter(col_idx)].width = width
-                    except Exception:
-                        pass
+                try:
+                    # Создаем директорию если нужно
+                    save_path_obj = Path(save_path)
+                    save_dir = save_path_obj.parent
+                    if save_dir and not save_dir.exists():
+                        save_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    with pd.ExcelWriter(save_path, engine="openpyxl") as writer:
+                        df.to_excel(writer, index=False, sheet_name="Лист1")
+                        ws = writer.sheets["Лист1"]
+                        # Автоширины
+                        for idx_c, col in enumerate(df.columns, start=1):
+                            max_len = len(str(col))
+                            for val in df[col].astype(str).values:
+                                if val is None:
+                                    continue
+                                for line in str(val).split("\n"):
+                                    if len(line) > max_len:
+                                        max_len = len(line)
+                            ws.column_dimensions[get_column_letter(idx_c)].width = min(80, max_len + 2)
+                        # Фиксированные ширины
+                        try:
+                            name_to_width = {
+                                "№ п/п": 8,
+                                "Номер заявки": 16,
+                                "Дата": 14,
+                                "Время": 12,
+                                "Содержание заявки": 50,
+                                "Категория": 20,
+                                "Номер бригады": 18,
+                                "Срок выполнения": 28,
+                                "Телефон": 20,
+                                "Адрес": 40,
+                                "Примечание": 30,
+                                "Заявитель": 25,
+                                "Оператор": 20,
+                                "Состояние выполнения": 28,
+                            }
+                            for name, width in name_to_width.items():
+                                if name in df.columns:
+                                    col_idx = list(df.columns).index(name) + 1
+                                    ws.column_dimensions[get_column_letter(col_idx)].width = width
+                        except Exception:
+                            pass
 
-                    # Подписи "Составил/Утвердил" одна под другой
+                        # Подписи "Составил/Утвердил" одна под другой
+                        try:
+                            sig_row = ws.max_row + 2
+                            ws.merge_cells(start_row=sig_row, start_column=1, end_row=sig_row, end_column=2)
+                            ws.cell(row=sig_row, column=1, value="Составил: __________________")
+                            sig_row2 = sig_row + 1
+                            ws.merge_cells(start_row=sig_row2, start_column=1, end_row=sig_row2, end_column=2)
+                            ws.cell(row=sig_row2, column=1, value="Утвердил: __________________")
+                        except Exception:
+                            pass
+                    messagebox.showinfo("Экспорт", f"Файл успешно сохранён:\n{save_path}")
+                except PermissionError:
+                    # Файл может быть открыт в другой программе - пробуем сохранить с другим именем
                     try:
-                        sig_row = ws.max_row + 2
-                        ws.merge_cells(start_row=sig_row, start_column=1, end_row=sig_row, end_column=2)
-                        ws.cell(row=sig_row, column=1, value="Составил: __________________")
-                        sig_row2 = sig_row + 1
-                        ws.merge_cells(start_row=sig_row2, start_column=1, end_row=sig_row2, end_column=2)
-                        ws.cell(row=sig_row2, column=1, value="Утвердил: __________________")
-                    except Exception:
-                        pass
-
-                messagebox.showinfo("Экспорт", f"Файл успешно сохранён:\n{save_path}")
+                        save_path_obj = Path(save_path)
+                        base_path = save_path_obj.parent / save_path_obj.stem
+                        ext = save_path_obj.suffix
+                        counter = 1
+                        saved = False
+                        while counter < 100 and not saved:
+                            new_path = base_path.parent / f"{base_path.name}_{counter}{ext}"
+                            if not new_path.exists():
+                                try:
+                                    with pd.ExcelWriter(str(new_path), engine="openpyxl") as writer:
+                                        df.to_excel(writer, index=False, sheet_name="Лист1")
+                                        ws = writer.sheets["Лист1"]
+                                        for idx_c, col in enumerate(df.columns, start=1):
+                                            max_len = len(str(col))
+                                            for val in df[col].astype(str).values:
+                                                if val is None:
+                                                    continue
+                                                for line in str(val).split("\n"):
+                                                    if len(line) > max_len:
+                                                        max_len = len(line)
+                                            ws.column_dimensions[get_column_letter(idx_c)].width = min(80, max_len + 2)
+                                    messagebox.showinfo("Экспорт", f"Файл был открыт в другой программе.\nСохранён с другим именем:\n{new_path}")
+                                    saved = True
+                                except Exception:
+                                    counter += 1
+                                    continue
+                            counter += 1
+                        if not saved:
+                            messagebox.showerror(
+                                "Ошибка доступа",
+                                f"Не удалось сохранить файл:\n{save_path}\n\n"
+                                f"Файл открыт в другой программе (Excel и т.д.).\n"
+                                f"Закройте файл и попробуйте снова."
+                            )
+                    except Exception as e:
+                        messagebox.showerror("Ошибка", f"Не удалось сохранить файл: {e}")
+                except Exception as e:
+                    messagebox.showerror("Ошибка экспорта", f"Произошла ошибка при экспорте файла:\n{e}")
             except Exception as e:
                 messagebox.showerror("Ошибка экспорта", f"Произошла ошибка при экспорте файла:\n{e}")
 
@@ -2083,34 +2278,41 @@ def open_main_window(user):
                 if not save_path:
                     messagebox.showinfo("Отмена", "Экспорт отменён пользователем")
                     return
-                with pd.ExcelWriter(save_path, engine="openpyxl") as writer:
-                    df.to_excel(writer, index=False, sheet_name="Лист1")
-                    ws = writer.sheets["Лист1"]
+                try:
+                    # Создаем директорию если нужно
+                    save_path_obj = Path(save_path)
+                    save_dir = save_path_obj.parent
+                    if save_dir and not save_dir.exists():
+                        save_dir.mkdir(parents=True, exist_ok=True)
                     
-                    # Расширенные ширины колонок
-                    try:
-                        name_to_width = {
-                            "№ п/п": 8,
-                            "Номер заявки": 16,
-                            "Дата": 14,
-                            "Время": 12,
-                            "Содержание заявки": 50,
-                            "Категория": 20,
-                            "Номер бригады": 18,
-                            "Срок выполнения": 28,
-                            "Телефон": 20,
-                            "Адрес": 40,
-                            "Примечание": 30,
-                            "Заявитель": 25,
-                            "Оператор": 20,
-                            "Состояние выполнения": 28,
-                        }
-                        for name, width in name_to_width.items():
-                            if name in df.columns:
-                                col_idx = list(df.columns).index(name) + 1
-                                ws.column_dimensions[get_column_letter(col_idx)].width = width
-                    except Exception:
-                        # Фолбэк: автоширины
+                    with pd.ExcelWriter(save_path, engine="openpyxl") as writer:
+                        df.to_excel(writer, index=False, sheet_name="Лист1")
+                        ws = writer.sheets["Лист1"]
+                        
+                        # Расширенные ширины колонок
+                        try:
+                            name_to_width = {
+                                "№ п/п": 8,
+                                "Номер заявки": 16,
+                                "Дата": 14,
+                                "Время": 12,
+                                "Содержание заявки": 50,
+                                "Категория": 20,
+                                "Номер бригады": 18,
+                                "Срок выполнения": 28,
+                                "Телефон": 20,
+                                "Адрес": 40,
+                                "Примечание": 30,
+                                "Заявитель": 25,
+                                "Оператор": 20,
+                                "Состояние выполнения": 28,
+                            }
+                            for name, width in name_to_width.items():
+                                if name in df.columns:
+                                    col_idx = list(df.columns).index(name) + 1
+                                    ws.column_dimensions[get_column_letter(col_idx)].width = width
+                        except Exception:
+                            # Фолбэк: автоширины
                             for idx_c, col in enumerate(df.columns, start=1):
                                 max_len = len(str(col))
                                 for val in df[col].astype(str).values:
@@ -2120,17 +2322,59 @@ def open_main_window(user):
                                         if len(line) > max_len:
                                             max_len = len(line)
                                 ws.column_dimensions[get_column_letter(idx_c)].width = min(80, max_len + 2)
-                    
-                    # Подписи "Составил/Утвердил"
+                        
+                        # Подписи "Составил/Утвердил"
+                        try:
+                            sig_row = ws.max_row + 2
+                            ws.merge_cells(start_row=sig_row, start_column=1, end_row=sig_row, end_column=2)
+                            ws.cell(row=sig_row, column=1, value="Составил: __________________")
+                            sig_row2 = sig_row + 1
+                            ws.merge_cells(start_row=sig_row2, start_column=1, end_row=sig_row2, end_column=2)
+                            ws.cell(row=sig_row2, column=1, value="Утвердил: __________________")
+                        except Exception:
+                            pass
+                    messagebox.showinfo("Экспорт", f"Файл успешно сохранён:\n{save_path}")
+                except PermissionError:
+                    # Файл может быть открыт в другой программе - пробуем сохранить с другим именем
                     try:
-                        sig_row = ws.max_row + 2
-                        ws.merge_cells(start_row=sig_row, start_column=1, end_row=sig_row, end_column=2)
-                        ws.cell(row=sig_row, column=1, value="Составил: __________________")
-                        sig_row2 = sig_row + 1
-                        ws.merge_cells(start_row=sig_row2, start_column=1, end_row=sig_row2, end_column=2)
-                        ws.cell(row=sig_row2, column=1, value="Утвердил: __________________")
-                    except Exception:
-                        pass
+                        save_path_obj = Path(save_path)
+                        base_path = save_path_obj.parent / save_path_obj.stem
+                        ext = save_path_obj.suffix
+                        counter = 1
+                        saved = False
+                        while counter < 100 and not saved:
+                            new_path = base_path.parent / f"{base_path.name}_{counter}{ext}"
+                            if not new_path.exists():
+                                try:
+                                    with pd.ExcelWriter(str(new_path), engine="openpyxl") as writer:
+                                        df.to_excel(writer, index=False, sheet_name="Лист1")
+                                        ws = writer.sheets["Лист1"]
+                                        for idx_c, col in enumerate(df.columns, start=1):
+                                            max_len = len(str(col))
+                                            for val in df[col].astype(str).values:
+                                                if val is None:
+                                                    continue
+                                                for line in str(val).split("\n"):
+                                                    if len(line) > max_len:
+                                                        max_len = len(line)
+                                            ws.column_dimensions[get_column_letter(idx_c)].width = min(80, max_len + 2)
+                                    messagebox.showinfo("Экспорт", f"Файл был открыт в другой программе.\nСохранён с другим именем:\n{new_path}")
+                                    saved = True
+                                except Exception:
+                                    counter += 1
+                                    continue
+                            counter += 1
+                        if not saved:
+                            messagebox.showerror(
+                                "Ошибка доступа",
+                                f"Не удалось сохранить файл:\n{save_path}\n\n"
+                                f"Файл открыт в другой программе (Excel и т.д.).\n"
+                                f"Закройте файл и попробуйте снова."
+                            )
+                    except Exception as e:
+                        messagebox.showerror("Ошибка", f"Не удалось сохранить файл: {e}")
+                except Exception as e:
+                    messagebox.showerror("Ошибка экспорта", f"Произошла ошибка при экспорте файла:\n{e}")
             except Exception as e:
                 messagebox.showerror("Ошибка экспорта", f"Произошла ошибка при экспорте файла:\n{e}")
 
@@ -2278,20 +2522,23 @@ def open_main_window(user):
             save_path = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile=default_name, filetypes=[("Excel файлы", "*.xlsx"), ("Все файлы", "*.*")], initialdir=(export_base_dir_var.get() or ""))
             if not save_path:
                 messagebox.showinfo("Отмена", "Экспорт отменён пользователем"); return
-            try:
-                wb.save(save_path)
+            if safe_save_workbook(wb, save_path, default_name):
                 messagebox.showinfo("Экспорт", f"Файл успешно сохранён:\n{save_path}")
-            except Exception as e:
-                messagebox.showerror("Ошибка", f"Не удалось сохранить файл: {e}")
+            # Если safe_save_workbook вернула False, она уже показала сообщение об ошибке
 
         def _collect_summary_counts(start_date: str, end_date: str, db_files=None):
             """Собирает статистику по проблемам за период для сводных отчётов."""
             def execute_query(cursor_to_use):
+                # Используем COALESCE для проверки обоих полей даты (created_at и date)
+                # Также проверяем, что problem не NULL
                 cursor_to_use.execute(
                     """
                     SELECT problem, COUNT(*) as count
                     FROM records 
-                    WHERE date(date) >= date(?) AND date(date) <= date(?)
+                    WHERE problem IS NOT NULL 
+                      AND problem != ''
+                      AND date(COALESCE(created_at, date)) >= date(?) 
+                      AND date(COALESCE(created_at, date)) <= date(?)
                     GROUP BY problem
                     """,
                     (start_date, end_date)
@@ -2301,9 +2548,29 @@ def open_main_window(user):
             try:
                 rows = _execute_query_multiple_dbs(execute_query, db_files)
                 
+                # Отладочная информация (можно убрать позже)
+                if not rows:
+                    # Проверяем, есть ли вообще записи за этот период
+                    def check_records(cursor_to_use):
+                        cursor_to_use.execute(
+                            """
+                            SELECT COUNT(*) 
+                            FROM records 
+                            WHERE date(COALESCE(created_at, date)) >= date(?) 
+                              AND date(COALESCE(created_at, date)) <= date(?)
+                            """,
+                            (start_date, end_date)
+                        )
+                        return cursor_to_use.fetchone()[0]
+                    
+                    total_count = sum(_execute_query_multiple_dbs(check_records, db_files) or [0])
+                    if total_count > 0:
+                        # Есть записи, но нет проблем - возможно все проблемы пустые
+                        pass
+                
                 # Инициализируем счётчики
                 counts = {
-                    "течь водопровода": 0,
+                    "течь воды": 0,
                     "течь канализации": 0,
                     "ав. на водоводе": 0,
                     "дефект водоразборной колонки": 0,
@@ -2315,16 +2582,48 @@ def open_main_window(user):
                 }
                 
                 # Заполняем счётчики на основе данных
-                for problem, count in rows:
-                    problem_lower = (problem or "").lower()
-                    # Течь канализации
-                    if "течь" in problem_lower and ("канализац" in problem_lower or "к/к" in problem_lower or "коллектор" in problem_lower):
-                        counts["течь канализации"] += count
+                for row in rows:
+                    # Извлекаем problem и count из результата запроса
+                    if len(row) >= 2:
+                        problem, count = row[0], row[1]
+                    else:
                         continue
+                    
+                    # Пропускаем пустые проблемы
+                    if not problem or not str(problem).strip():
+                        continue
+                    
+                    # Убеждаемся, что count - это число
+                    try:
+                        count = int(count) if count is not None else 0
+                    except (ValueError, TypeError):
+                        count = 1  # Если count не число, считаем как 1 запись
+                    
+                    if count <= 0:
+                        continue
+                    
+                    # Очищаем текст от скобок с категориями перед проверкой
+                    problem_clean = clean_problem_text(str(problem))
+                    problem_lower = problem_clean.lower()
+                    
+                    # Пропускаем, если после очистки проблема пустая
+                    if not problem_lower:
+                        continue
+                    
+                    # Течь канализации (проверяем ПЕРВОЙ, чтобы не перехватить "течь воды")
+                    # Проверяем различные варианты написания
+                    if "течь" in problem_lower:
+                        if ("канализац" in problem_lower or "к/к" in problem_lower or "коллектор" in problem_lower or 
+                            "канализ" in problem_lower):
+                            counts["течь канализации"] += count
+                            continue
+                    
                     # Течь воды (включая гидрант, водовод, колонки, трассу х/в)
+                    # НО НЕ течь канализации (уже обработана выше)
                     if "течь" in problem_lower and (
-                        "вод" in problem_lower or "х/в" in problem_lower or "гидрант" in problem_lower or "колонк" in problem_lower or "водовод" in problem_lower or "трасс" in problem_lower
-                    ):
+                        "вод" in problem_lower or "х/в" in problem_lower or "гидрант" in problem_lower or 
+                        "колонк" in problem_lower or "водовод" in problem_lower or "трасс" in problem_lower
+                    ) and "канализац" not in problem_lower and "к/к" not in problem_lower and "коллектор" not in problem_lower and "канализ" not in problem_lower:
                         counts["течь воды"] += count
                         continue
                     # Авария на водоводе (не считать как течь)
@@ -2342,7 +2641,7 @@ def open_main_window(user):
                         counts["рж. х/в"] += count
                         continue
                     # Засор канализации
-                    if "засор" in problem_lower and "канализац" in problem_lower:
+                    if "засор" in problem_lower and ("канализац" in problem_lower or "к/к" in problem_lower or "канализ" in problem_lower):
                         counts["засор канализации"] += count
                         continue
                     # Авария на к/коллекторе
@@ -2449,8 +2748,9 @@ def open_main_window(user):
                     ws.cell(row=row2, column=1).alignment = Alignment(horizontal="left")
                 except Exception:
                     pass
-                wb.save(save_path)
-                messagebox.showinfo("Экспорт", f"Отчёт успешно сохранён:\n{save_path}")
+                if safe_save_workbook(wb, save_path, default_name):
+                    messagebox.showinfo("Экспорт", f"Отчёт успешно сохранён:\n{save_path}")
+                # Если safe_save_workbook вернула False, она уже показала сообщение об ошибке
             except Exception as e:
                 messagebox.showerror("Ошибка экспорта", f"Произошла ошибка при создании отчёта:\n{e}")
 
@@ -2494,17 +2794,20 @@ def open_main_window(user):
                 return
 
             def category_for(problem_text: str) -> str:
+                if not problem_text:
+                    return "ВОДОПРОВОД"
+                
                 t = (problem_text or "").lower()
                 
                 # Сначала проверяем, есть ли категория в скобках в самом тексте проблемы
                 # Формат: "содержание (категория)" - извлекаем категорию из скобок
                 import re
-                # Ищем категорию в скобках, но не "срок выполнения"
+                # Ищем категорию в скобках, но не "срок выполнения" и не пустые скобки
                 category_match = re.search(r'\(([^)]+)\)', t)
                 if category_match:
                     category_in_parens = category_match.group(1).lower().strip()
-                    # Игнорируем "срок выполнения" и другие служебные скобки
-                    if "срок" not in category_in_parens and "выполнен" not in category_in_parens:
+                    # Игнорируем "срок выполнения" и другие служебные скобки, а также пустые скобки
+                    if category_in_parens and "срок" not in category_in_parens and "выполнен" not in category_in_parens:
                         # Маппинг категорий из скобок в названия секций бланка
                         category_map = {
                             "канализация": "КАНАЛИЗАЦИЯ",
@@ -2523,82 +2826,85 @@ def open_main_window(user):
                         for key, value in category_map.items():
                             if key in category_in_parens:
                                 return value
-                            # Если не нашли точное совпадение, пробуем по первым словам
-                            if "канализац" in category_in_parens:
-                                return "КАНАЛИЗАЦИЯ"
-                            if "водопровод" in category_in_parens or "водоснабж" in category_in_parens:
-                                return "ВОДОПРОВОД"
-                            if "перекладк" in category_in_parens:
-                                return "ПЕРЕКЛАДКА"
-                            if "колонк" in category_in_parens:
-                                return "В/КОЛОНКИ"
-                            if "гидрант" in category_in_parens:
-                                return "ПОЖАРНЫЕ ГИДРАНТЫ"
-                            if "врезк" in category_in_parens:
-                                return "ЧАСТНЫЕ ВРЕЗКИ"
+                        # Если не нашли точное совпадение, пробуем по первым словам
+                        if "канализац" in category_in_parens:
+                            return "КАНАЛИЗАЦИЯ"
+                        if "водопровод" in category_in_parens or "водоснабж" in category_in_parens:
+                            return "ВОДОПРОВОД"
+                        if "перекладк" in category_in_parens:
+                            return "ПЕРЕКЛАДКА"
+                        if "колонк" in category_in_parens:
+                            return "В/КОЛОНКИ"
+                        if "гидрант" in category_in_parens:
+                            return "ПОЖАРНЫЕ ГИДРАНТЫ"
+                        if "врезк" in category_in_parens:
+                            return "ЧАСТНЫЕ ВРЕЗКИ"
                 
-                # Проверяем маппинг из problem_to_blank_category
+                # Проверяем маппинг из problem_to_blank_category (используем очищенный текст)
                 problem_clean = clean_problem_text(problem_text).lower()
-                if problem_clean in problem_to_blank_category:
+                if problem_clean and problem_clean in problem_to_blank_category:
                     return problem_to_blank_category[problem_clean]
+                
+                # Используем очищенный текст для проверки ключевых слов (без скобок с категориями)
+                t_clean = clean_problem_text(problem_text).lower()
                 
                 # ПЕРЕКЛАДКА: прокладка водопровода, врезка водопровода, разрытие, прокол канализации, прокол водопровода, замена водовода
                 # Приоритет: проверяем сначала ПЕРЕКЛАДКУ
-                if "перекладк" in t or "прокладк" in t:
+                if "перекладк" in t_clean or "прокладк" in t_clean:
                     # Если есть "перекладка" или "прокладка" - это ПЕРЕКЛАДКА
                     return "ПЕРЕКЛАДКА"
-                if "разрытие" in t and "восстанов" not in t:
+                if "разрытие" in t_clean and "восстанов" not in t_clean:
                     # "разрытие" само по себе - ПЕРЕКЛАДКА, но "восстановить разрытие" - ВОДОПРОВОД
                     return "ПЕРЕКЛАДКА"
-                if "прокол" in t:
+                if "прокол" in t_clean:
                     # прокол канализации или прокол водопровода
                     return "ПЕРЕКЛАДКА"
-                if "замен" in t and "водовод" in t:
+                if "замен" in t_clean and "водовод" in t_clean:
                     # замена водовода
                     return "ПЕРЕКЛАДКА"
-                if "врезк" in t and "водопровод" in t and "частн" not in t:
+                if "врезк" in t_clean and "водопровод" in t_clean and "частн" not in t_clean:
                     # врезка водопровода (но не частная)
                     return "ПЕРЕКЛАДКА"
                 
                 # ЧАСТНЫЕ ВРЕЗКИ: ч/врезка, ч/врезка (нужна откачка воды из колодца)
-                if ("врезк" in t and "частн" in t) or ("ч/" in t and "врезк" in t) or \
-                   ("частн" in t and "врезк" in t):
+                if ("врезк" in t_clean and "частн" in t_clean) or ("ч/" in t_clean and "врезк" in t_clean) or \
+                   ("частн" in t_clean and "врезк" in t_clean):
                     return "ЧАСТНЫЕ ВРЕЗКИ"
                 
                 # ПОЖАРНЫЕ ГИДРАНТЫ: неисправен ПГ, домонтирован ПГ, нет воды в ПГ, соран шток ПГ и затоплен водой
-                if "гидрант" in t or "пг" in t:
+                if "гидрант" in t_clean or "пг" in t_clean:
                     return "ПОЖАРНЫЕ ГИДРАНТЫ"
                 
                 # В/КОЛОНКИ: ремонт в/колонки
-                if "колонк" in t:
+                if "колонк" in t_clean:
                     return "В/КОЛОНКИ"
                 
                 # ВОДОПРОВОД: перекладка водопровода, течь, замена крана (оплачено), течь, открыт в/к и течь в/к, 
                 # перекрыть/открыть х/в (оплачено), восстановить благоустройство, сл.давление х/воды, восстановить разрытие
-                if "течь" in t and "канализац" not in t:
+                if "течь" in t_clean and "канализац" not in t_clean:
                     # течь (но не течь канализации)
                     return "ВОДОПРОВОД"
-                if "замен" in t and "кран" in t:
+                if "замен" in t_clean and "кран" in t_clean:
                     # замена крана
                     return "ВОДОПРОВОД"
-                if "открыт" in t and ("в/к" in t or "в/колонк" in t):
+                if "открыт" in t_clean and ("в/к" in t_clean or "в/колонк" in t_clean):
                     # открыт в/к и течь в/к
                     return "ВОДОПРОВОД"
-                if ("перекрыт" in t or "открыт" in t) and ("х/в" in t or "холодн" in t):
+                if ("перекрыт" in t_clean or "открыт" in t_clean) and ("х/в" in t_clean or "холодн" in t_clean):
                     # перекрыть/открыть х/в
                     return "ВОДОПРОВОД"
-                if "восстанов" in t and ("благоустр" in t or "разрытие" in t):
+                if "восстанов" in t_clean and ("благоустр" in t_clean or "разрытие" in t_clean):
                     # восстановить благоустройство, восстановить разрытие
                     return "ВОДОПРОВОД"
-                if ("слаб" in t or "сл." in t) and ("давл" in t or "х/в" in t or "холодн" in t):
+                if ("слаб" in t_clean or "сл." in t_clean) and ("давл" in t_clean or "х/в" in t_clean or "холодн" in t_clean):
                     # сл.давление х/воды
                     return "ВОДОПРОВОД"
-                if "водопровод" in t:
+                if "водопровод" in t_clean:
                     # все остальное с водопроводом
                     return "ВОДОПРОВОД"
                 
                 # КАНАЛИЗАЦИЯ: все остальное, связанное с канализацией
-                if ("засор" in t) or ("колодец" in t and ("канализац" in t or "забой" in t)) or ("канализац" in t):
+                if ("засор" in t_clean) or ("колодец" in t_clean and ("канализац" in t_clean or "забой" in t_clean)) or ("канализац" in t_clean):
                     return "КАНАЛИЗАЦИЯ"
                 
                 # По умолчанию - ВОДОПРОВОД
@@ -2619,6 +2925,10 @@ def open_main_window(user):
                 else:
                     problem, address, phone, name_, surname_, brigade_number, dt_str, status_full = rec
                     category = ""
+                
+                # Очищаем содержимое заявки от скобок с категориями перед обработкой
+                problem_clean = clean_problem_text(problem or "")
+                
                 who = " ".join([p for p in [name_ or "", surname_ or ""] if p]).strip()
                 time_part = ""; date_part = ""
                 try:
@@ -2634,8 +2944,9 @@ def open_main_window(user):
                     line_parts.append(f"Категория: {category}")
                 if address:
                     line_parts.append(str(address))
-                if problem:
-                    line_parts.append(str(problem))
+                if problem_clean:
+                    # Используем очищенное содержимое заявки
+                    line_parts.append(str(problem_clean))
                 if phone:
                     line_parts.append(f"тел: {phone}")
                 if who:
@@ -2654,7 +2965,8 @@ def open_main_window(user):
                         right_text = (right_text + (" — " if right_text else "") + status_full).strip()
                 except Exception:
                     right_text = status_full or ""
-                sections[category_for(problem)].append((text_line, right_text))
+                # Используем оригинальный problem для определения категории (там может быть категория в скобках)
+                sections[category_for(problem or "")].append((text_line, right_text))
 
             wb = Workbook()
             ws = wb.active
@@ -2718,11 +3030,9 @@ def open_main_window(user):
             if not save_path:
                 messagebox.showinfo("Отмена", "Экспорт отменён пользователем")
                 return
-            try:
-                wb.save(save_path)
+            if safe_save_workbook(wb, save_path, default_name):
                 messagebox.showinfo("Экспорт", f"Бланк сохранён:\n{save_path}")
-            except Exception as e:
-                messagebox.showerror("Ошибка", f"Не удалось сохранить файл: {e}")
+            # Если safe_save_workbook вернула False, она уже показала сообщение об ошибке
 
         def _export_daily_blank_custom():
             """Бланк сведений за выбранную дату."""
@@ -2788,17 +3098,20 @@ def open_main_window(user):
                     return
 
                 def category_for(problem_text: str) -> str:
+                    if not problem_text:
+                        return "ВОДОПРОВОД"
+                    
                     t = (problem_text or "").lower()
                     
                     # Сначала проверяем, есть ли категория в скобках в самом тексте проблемы
                     # Формат: "содержание (категория)" - извлекаем категорию из скобок
                     import re
-                    # Ищем категорию в скобках, но не "срок выполнения"
+                    # Ищем категорию в скобках, но не "срок выполнения" и не пустые скобки
                     category_match = re.search(r'\(([^)]+)\)', t)
                     if category_match:
                         category_in_parens = category_match.group(1).lower().strip()
-                        # Игнорируем "срок выполнения" и другие служебные скобки
-                        if "срок" not in category_in_parens and "выполнен" not in category_in_parens:
+                        # Игнорируем "срок выполнения" и другие служебные скобки, а также пустые скобки
+                        if category_in_parens and "срок" not in category_in_parens and "выполнен" not in category_in_parens:
                             # Маппинг категорий из скобок в названия секций бланка
                             category_map = {
                                 "канализация": "КАНАЛИЗАЦИЯ",
@@ -2831,51 +3144,54 @@ def open_main_window(user):
                             if "врезк" in category_in_parens:
                                 return "ЧАСТНЫЕ ВРЕЗКИ"
                     
-                    # Проверяем маппинг из problem_to_blank_category (используем оригинальный problem_text)
+                    # Проверяем маппинг из problem_to_blank_category (используем очищенный текст)
                     try:
                         problem_clean = clean_problem_text(problem_text).lower()
-                        if problem_clean in problem_to_blank_category:
+                        if problem_clean and problem_clean in problem_to_blank_category:
                             return problem_to_blank_category[problem_clean]
                     except Exception:
                         pass
                     
-                    if "перекладк" in t or "прокладк" in t:
+                    # Используем очищенный текст для проверки ключевых слов (без скобок с категориями)
+                    t_clean = clean_problem_text(problem_text).lower()
+                    
+                    if "перекладк" in t_clean or "прокладк" in t_clean:
                         return "ПЕРЕКЛАДКА"
-                    if "разрытие" in t and "восстанов" not in t:
+                    if "разрытие" in t_clean and "восстанов" not in t_clean:
                         return "ПЕРЕКЛАДКА"
-                    if "прокол" in t:
+                    if "прокол" in t_clean:
                         return "ПЕРЕКЛАДКА"
-                    if "замен" in t and "водовод" in t:
+                    if "замен" in t_clean and "водовод" in t_clean:
                         return "ПЕРЕКЛАДКА"
-                    if "врезк" in t and "водопровод" in t and "частн" not in t:
+                    if "врезк" in t_clean and "водопровод" in t_clean and "частн" not in t_clean:
                         return "ПЕРЕКЛАДКА"
                     
-                    if ("врезк" in t and "частн" in t) or ("ч/" in t and "врезк" in t) or \
-                       ("частн" in t and "врезк" in t):
+                    if ("врезк" in t_clean and "частн" in t_clean) or ("ч/" in t_clean and "врезк" in t_clean) or \
+                       ("частн" in t_clean and "врезк" in t_clean):
                         return "ЧАСТНЫЕ ВРЕЗКИ"
                     
-                    if "гидрант" in t or "пг" in t:
+                    if "гидрант" in t_clean or "пг" in t_clean:
                         return "ПОЖАРНЫЕ ГИДРАНТЫ"
                     
-                    if "колонк" in t:
+                    if "колонк" in t_clean:
                         return "В/КОЛОНКИ"
                     
-                    if "течь" in t and "канализац" not in t:
+                    if "течь" in t_clean and "канализац" not in t_clean:
                         return "ВОДОПРОВОД"
-                    if "замен" in t and "кран" in t:
+                    if "замен" in t_clean and "кран" in t_clean:
                         return "ВОДОПРОВОД"
-                    if "открыт" in t and ("в/к" in t or "в/колонк" in t):
+                    if "открыт" in t_clean and ("в/к" in t_clean or "в/колонк" in t_clean):
                         return "ВОДОПРОВОД"
-                    if ("перекрыт" in t or "открыт" in t) and ("х/в" in t or "холодн" in t):
+                    if ("перекрыт" in t_clean or "открыт" in t_clean) and ("х/в" in t_clean or "холодн" in t_clean):
                         return "ВОДОПРОВОД"
-                    if "восстанов" in t and ("благоустр" in t or "разрытие" in t):
+                    if "восстанов" in t_clean and ("благоустр" in t_clean or "разрытие" in t_clean):
                         return "ВОДОПРОВОД"
-                    if ("слаб" in t or "сл." in t) and ("давл" in t or "х/в" in t or "холодн" in t):
+                    if ("слаб" in t_clean or "сл." in t_clean) and ("давл" in t_clean or "х/в" in t_clean or "холодн" in t_clean):
                         return "ВОДОПРОВОД"
-                    if "водопровод" in t:
+                    if "водопровод" in t_clean:
                         return "ВОДОПРОВОД"
                     
-                    if ("засор" in t) or ("колодец" in t and ("канализац" in t or "забой" in t)) or ("канализац" in t):
+                    if ("засор" in t_clean) or ("колодец" in t_clean and ("канализац" in t_clean or "забой" in t_clean)) or ("канализац" in t_clean):
                         return "КАНАЛИЗАЦИЯ"
                     
                     return "ВОДОПРОВОД"
@@ -2895,6 +3211,10 @@ def open_main_window(user):
                     else:
                         problem, address, phone, name_, surname_, brigade_number, dt_str, status_full = rec
                         category = ""
+                    
+                    # Очищаем содержимое заявки от скобок с категориями перед обработкой
+                    problem_clean = clean_problem_text(problem or "")
+                    
                     who = " ".join([p for p in [name_ or "", surname_ or ""] if p]).strip()
                     time_part = ""; date_part = ""
                     try:
@@ -2910,8 +3230,9 @@ def open_main_window(user):
                         line_parts.append(f"Категория: {category}")
                     if address:
                         line_parts.append(str(address))
-                    if problem:
-                        line_parts.append(str(problem))
+                    if problem_clean:
+                        # Используем очищенное содержимое заявки
+                        line_parts.append(str(problem_clean))
                     if phone:
                         line_parts.append(f"тел: {phone}")
                     if who:
@@ -2929,7 +3250,8 @@ def open_main_window(user):
                             right_text = (right_text + (" — " if right_text else "") + status_full).strip()
                     except Exception:
                         right_text = status_full or ""
-                    sections[category_for(problem)].append((text_line, right_text))
+                    # Используем оригинальный problem для определения категории (там может быть категория в скобках)
+                    sections[category_for(problem or "")].append((text_line, right_text))
 
                 wb = Workbook()
                 ws = wb.active
@@ -2991,11 +3313,8 @@ def open_main_window(user):
                 if not save_path:
                     messagebox.showinfo("Отмена", "Экспорт отменён пользователем")
                     return
-                try:
-                    wb.save(save_path)
+                if safe_save_workbook(wb, save_path, default_name):
                     messagebox.showinfo("Экспорт", f"Бланк сохранён:\n{save_path}")
-                except Exception as e:
-                    messagebox.showerror("Ошибка", f"Ошибка сохранения: {e}")
 
             btns = ttk.Frame(frm, padding="10")
             btns.grid(row=1, column=0, columnspan=2, sticky=(tk.E, tk.W))
@@ -3203,7 +3522,6 @@ def open_main_window(user):
                 ],
                 "общие": [
                     "перекладка",
-                    "водопровод",
                     "частные врезки",
                     "открыт колодец (отсутствие/несоответствие крышки)",
                     "восстановление асфальтобетонного покрытия",
@@ -3252,7 +3570,9 @@ def open_main_window(user):
                 else:
                     filtered_options = problem_categories_edit["общие"]
                 
-                problem_entry_edit['values'] = sorted(filtered_options, key=lambda s: s.lower())
+                # Очищаем проблемы от пустых скобок перед отображением
+                cleaned_options = [clean_problem_text(p) for p in filtered_options]
+                problem_entry_edit['values'] = sorted(cleaned_options, key=lambda s: s.lower())
                 # Если текущее значение не входит в новый список, оставляем его (для редактирования существующих записей)
             
             category_var_edit.trace('w', update_problem_options_edit)
@@ -3265,7 +3585,9 @@ def open_main_window(user):
             else:
                 initial_options = problem_categories_edit["общие"]
             
-            problem_entry_edit = ttk.Combobox(frm, textvariable=problem_var, values=sorted(initial_options, key=lambda s: s.lower()), state="readonly", width=27)
+            # Очищаем проблемы от пустых скобок перед отображением
+            cleaned_initial_options = [clean_problem_text(p) for p in initial_options]
+            problem_entry_edit = ttk.Combobox(frm, textvariable=problem_var, values=sorted(cleaned_initial_options, key=lambda s: s.lower()), state="readonly", width=27)
             problem_entry_edit.grid(row=3, column=1, sticky=(tk.W, tk.E), padx=(10, 0), pady=5)
 
             ttk.Label(frm, text="Номер бригады:").grid(row=4, column=0, sticky=tk.W, pady=5)

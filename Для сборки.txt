@@ -1,0 +1,2 @@
+cd C:\Users\RedWinss\Desktop\Disp-main
+pyinstaller --clean --noconfirm .\Disp.spec
